@@ -6,6 +6,7 @@
 <title>NutriLog — Sprint 6</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://apis.google.com/js/api.js" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -568,6 +569,26 @@ hr.divider{border:none;border-top:1px solid var(--border);margin:12px 0}
 </style>
 </head>
 <body>
+
+<!-- Login Gate -->
+<div id="loginGate" style="position:fixed;inset:0;background:#060C1A;z-index:99999;display:flex;align-items:center;justify-content:center">
+  <div style="background:#0D1B2E;border:1px solid #1E2D45;border-radius:14px;padding:40px 44px;width:340px;max-width:90vw;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.6)">
+    <div style="font-family:'Space Grotesk',sans-serif;font-size:26px;font-weight:800;margin-bottom:4px"><span style="color:#00E5B4">Nutri</span>Log</div>
+    <div style="font-size:12px;color:#475569;margin-bottom:28px">Sign in to continue</div>
+    <div id="loginErr" style="display:none;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:#f87171;font-size:12px;padding:8px 12px;border-radius:8px;margin-bottom:14px"></div>
+    <input id="loginUser" type="text" placeholder="Username" autocomplete="username"
+      style="width:100%;box-sizing:border-box;background:#111D2E;border:1px solid #1E2D45;border-radius:8px;padding:11px 14px;color:#E2E8F0;font-size:14px;outline:none;margin-bottom:10px;font-family:inherit"
+      onkeydown="if(event.key==='Enter')document.getElementById('loginPass').focus()">
+    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password"
+      style="width:100%;box-sizing:border-box;background:#111D2E;border:1px solid #1E2D45;border-radius:8px;padding:11px 14px;color:#E2E8F0;font-size:14px;outline:none;margin-bottom:18px;font-family:inherit"
+      onkeydown="if(event.key==='Enter')attemptLogin()">
+    <button onclick="attemptLogin()"
+      style="width:100%;background:#00E5B4;color:#060C1A;border:none;border-radius:8px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">
+      Sign In
+    </button>
+  </div>
+</div>
+
 <div id="notif"></div>
 
 <!-- Mobile bottom nav (only visible ≤600px) -->
@@ -703,6 +724,9 @@ hr.divider{border:none;border-top:1px solid var(--border);margin:12px 0}
   <div class="header-stats" id="headerStats"></div>
   <button class="print-btn" onclick="printSummary()" title="Print today's summary">🖨 Print</button>
   <button class="print-btn" onclick="copyTextSummary()" title="Copy summary to clipboard" style="margin-left:4px">📋 Copy</button>
+  <button class="print-btn" id="driveBtn" onclick="driveSync()" title="Sync with Google Drive" style="margin-left:4px;display:flex;align-items:center;gap:5px">
+    <span id="driveBtnIcon">☁</span> <span id="driveBtnLabel">Sync</span>
+  </button>
 </div>
 
 
@@ -3730,6 +3754,16 @@ document.addEventListener("DOMContentLoaded",()=>{
     m.addEventListener("click",e=>{ if(e.target===m) closeModal(m.id); });
   });
 
+  // Auth check — if already authenticated this session, boot app immediately
+  if(sessionStorage.getItem('nl_auth')==='1'){
+    document.getElementById('loginGate').style.display='none';
+    initApp();
+  } else {
+    setTimeout(()=>{ const el=document.getElementById('loginUser'); if(el) el.focus(); },100);
+  }
+});
+
+function initApp(){
   loadTheme();
   renderFavoritesPanel();
   // Custom target inputs
@@ -3745,7 +3779,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     startReminders(getReminderSettings());
   }
   setInterval(()=>{ if(currentSection==="dashboard"){buildTimeline(); renderPacing();} renderHeader(); renderSidebarSummary(); },60000);
-});
+  initGapi();
+}
 
 // ── DASHBOARD FASTING WIDGET ──────────────────────────────────────────────
 function renderDashFast(){
@@ -4031,6 +4066,213 @@ function renderFasting(){
   renderFastLogger();
   renderFastHistory();
 }
+
+// ── AUTH ──────────────────────────────────────────────────────────────────
+const _CRED_HASH='4b624ddb72c7ae60c99492adcf624c1686aa0b5376c2fc344e67ca6fa1fdae23';
+const _SALT='nutrilog_v6_auth';
+
+async function _sha256(str){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function attemptLogin(){
+  const u=document.getElementById('loginUser').value.trim();
+  const p=document.getElementById('loginPass').value;
+  const hash=await _sha256(`${_SALT}:${u}:${p}`);
+  if(hash===_CRED_HASH){
+    sessionStorage.setItem('nl_auth','1');
+    document.getElementById('loginGate').style.display='none';
+    initApp();
+  } else {
+    const err=document.getElementById('loginErr');
+    err.textContent='Incorrect username or password.';
+    err.style.display='block';
+    document.getElementById('loginPass').value='';
+    document.getElementById('loginPass').focus();
+  }
+}
+
+function checkAuth(){
+  if(sessionStorage.getItem('nl_auth')==='1'){
+    document.getElementById('loginGate').style.display='none';
+    return true;
+  }
+  // Focus username field
+  setTimeout(()=>{ const el=document.getElementById('loginUser'); if(el) el.focus(); },100);
+  return false;
+}
+
+// ── GOOGLE DRIVE SYNC ─────────────────────────────────────────────────────
+const DRIVE_CLIENT_ID='632376360318-iec9ffpo7rh60bus0paldv7bl9nj5mi3.apps.googleusercontent.com';
+const DRIVE_SCOPE='https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
+const DRIVE_FILENAME='nutrilog_backup.json';
+let _gapiReady=false;
+let _driveToken=null;
+let _driveFileId=null;
+
+function initGapi(){
+  if(typeof gapi==='undefined'){ setTimeout(initGapi,500); return; }
+  gapi.load('client',async()=>{
+    await gapi.client.init({});
+    _gapiReady=true;
+  });
+}
+
+function _setDriveBtn(icon,label,spin){
+  const bi=document.getElementById('driveBtnIcon');
+  const bl=document.getElementById('driveBtnLabel');
+  if(bi) bi.textContent=spin?'⟳':icon;
+  if(bl) bl.textContent=label;
+}
+
+async function _getDriveToken(){
+  return new Promise((resolve,reject)=>{
+    const client=google.accounts.oauth2.initTokenClient({
+      client_id:DRIVE_CLIENT_ID,
+      scope:DRIVE_SCOPE,
+      callback:(resp)=>{
+        if(resp.error){ reject(resp.error); return; }
+        _driveToken=resp.access_token;
+        resolve(resp.access_token);
+      }
+    });
+    if(_driveToken){
+      // Verify existing token still valid
+      resolve(_driveToken);
+    } else {
+      client.requestAccessToken({prompt:'consent'});
+    }
+  });
+}
+
+async function _findDriveFile(token){
+  const resp=await fetch(
+    `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27${DRIVE_FILENAME}%27&fields=files(id,name,modifiedTime)`,
+    {headers:{Authorization:`Bearer ${token}`}}
+  );
+  const data=await resp.json();
+  return data.files&&data.files.length>0?data.files[0]:null;
+}
+
+async function _readDriveFile(token,fileId){
+  const resp=await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    {headers:{Authorization:`Bearer ${token}`}}
+  );
+  return await resp.json();
+}
+
+async function _writeDriveFile(token,fileId,data){
+  const body=JSON.stringify(data);
+  const metadata={name:DRIVE_FILENAME,parents:fileId?undefined:['appDataFolder']};
+  const form=new FormData();
+  form.append('metadata',new Blob([JSON.stringify(metadata)],{type:'application/json'}));
+  form.append('file',new Blob([body],{type:'application/json'}));
+  const url=fileId
+    ?`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+    :`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+  const method=fileId?'PATCH':'POST';
+  const resp=await fetch(url,{method,headers:{Authorization:`Bearer ${token}`},body:form});
+  return await resp.json();
+}
+
+function _buildSyncPayload(){
+  // Collect all nutrilog keys from localStorage
+  const payload={version:2,syncedAt:new Date().toISOString(),days:{},profile:null,customIngredients:[],templates:[],weights:{},favorites:[],fasts:[]};
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(!k||!k.startsWith('nutrilog')) continue;
+    try{
+      const v=JSON.parse(localStorage.getItem(k));
+      if(k==='nutrilog_profile') payload.profile=v;
+      else if(k==='nutrilog_custom_ingredients') payload.customIngredients=v;
+      else if(k==='nutrilog_templates') payload.templates=v;
+      else if(k==='nutrilog_weights') payload.weights=v;
+      else if(k==='nutrilog_favorites') payload.favorites=v;
+      else if(k==='nutrilog_fasts') payload.fasts=v;
+      else if(k==='nutrilog_theme') payload.theme=v;
+      else if(k.match(/^nutrilog_\d{4}-\d{2}-\d{2}$/)) payload.days[k.replace('nutrilog_','')]=v;
+    }catch(e){}
+  }
+  return payload;
+}
+
+function _applySyncPayload(payload){
+  if(payload.profile) localStorage.setItem('nutrilog_profile',JSON.stringify(payload.profile));
+  if(payload.customIngredients) localStorage.setItem('nutrilog_custom_ingredients',JSON.stringify(payload.customIngredients));
+  if(payload.templates) localStorage.setItem('nutrilog_templates',JSON.stringify(payload.templates));
+  if(payload.weights) localStorage.setItem('nutrilog_weights',JSON.stringify(payload.weights));
+  if(payload.favorites) localStorage.setItem('nutrilog_favorites',JSON.stringify(payload.favorites));
+  if(payload.fasts) localStorage.setItem('nutrilog_fasts',JSON.stringify(payload.fasts));
+  if(payload.theme) localStorage.setItem('nutrilog_theme',JSON.stringify(payload.theme));
+  if(payload.days){
+    Object.entries(payload.days).forEach(([date,data])=>{
+      localStorage.setItem('nutrilog_'+date,JSON.stringify(data));
+    });
+  }
+}
+
+async function driveSync(){
+  if(!sessionStorage.getItem('nl_auth')){ notify('Please sign in first','error'); return; }
+  _setDriveBtn('⟳','Syncing…',true);
+  try{
+    // Load Google Identity Services if not already loaded
+    if(typeof google==='undefined'||!google.accounts){
+      await new Promise((res,rej)=>{
+        const s=document.createElement('script');
+        s.src='https://accounts.google.com/gsi/client';
+        s.onload=res; s.onerror=rej;
+        document.head.appendChild(s);
+      });
+    }
+    const token=await _getDriveToken();
+    // Find existing file
+    const existing=await _findDriveFile(token);
+    const localPayload=_buildSyncPayload();
+    if(existing){
+      // Merge: Drive data wins for days that exist there but not locally
+      // Local data wins for days that exist locally but not on Drive
+      // For conflicts (same day modified on both), local wins
+      const drivePayload=await _readDriveFile(token,existing.id);
+      // Merge days: union of both, local takes precedence
+      const mergedDays=Object.assign({},drivePayload.days||{},localPayload.days);
+      // For scalar items, local takes precedence (user just made changes here)
+      const merged={
+        ...drivePayload,
+        ...localPayload,
+        days:mergedDays,
+        syncedAt:new Date().toISOString()
+      };
+      // Apply merged back to localStorage (picks up any Drive-only days)
+      _applySyncPayload(merged);
+      // Write merged back to Drive
+      const result=await _writeDriveFile(token,existing.id,merged);
+      _driveFileId=result.id||existing.id;
+    } else {
+      // No file on Drive yet — create it
+      const result=await _writeDriveFile(token,null,localPayload);
+      _driveFileId=result.id;
+    }
+    _setDriveBtn('✓','Synced',false);
+    notify('☁ Synced with Google Drive');
+    // Reload state from localStorage
+    const today=new Date().toISOString().split('T')[0];
+    const saved=getDayData(today);
+    state.foodLog=saved.foodLog||[];
+    state.exerciseLog=saved.exerciseLog||[];
+    state.waterLog=saved.waterLog||[];
+    state.profile=JSON.parse(localStorage.getItem('nutrilog_profile')||'{}');
+    renderAll();
+    setTimeout(()=>_setDriveBtn('☁','Sync',false),3000);
+  }catch(err){
+    console.error('Drive sync error:',err);
+    _setDriveBtn('☁','Sync',false);
+    notify('Drive sync failed: '+(err.message||err),'error');
+    _driveToken=null; // reset token so next attempt re-auths
+  }
+}
+
 
 function updateFastHero(){
   const active=getActiveFast();
