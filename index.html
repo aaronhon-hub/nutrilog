@@ -950,6 +950,7 @@ hr.divider{border:none;border-top:1px solid var(--border);margin:12px 0}
     <button class="sub-tab" onclick="switchLibTab('favorites')" id="libtab-favorites">Favorites</button>
     <button class="sub-tab" onclick="switchLibTab('custom')" id="libtab-custom">Custom</button>
     <button class="sub-tab" onclick="switchLibTab('recipes')" id="libtab-recipes">Recipes</button>
+    <button class="sub-tab" onclick="switchLibTab('lookup')" id="libtab-lookup">🔍 USDA Lookup</button>
     <button class="sub-tab" onclick="switchLibTab('converter')" id="libtab-converter">Converter</button>
   </div>
 
@@ -988,6 +989,36 @@ hr.divider{border:none;border-top:1px solid var(--border);margin:12px 0}
         <button class="btn btn-mint btn-sm" onclick="openAddCustom()">＋ New Ingredient</button>
       </div>
       <div id="customIngredientList"></div>
+    </div>
+  </div>
+
+
+  <!-- USDA LOOKUP -->
+  <div class="sub-panel" id="libpanel-lookup">
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-title">🔍 USDA / Open Food Facts Lookup</div>
+      <div style="font-size:11px;color:var(--text2);margin-bottom:14px;line-height:1.6">
+        Search by food name or scan a barcode to import nutrition data. Matched foods can be added directly to your custom ingredients library.
+      </div>
+      <!-- Search row -->
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <input type="text" id="usdaSearch" placeholder="Search food name…"
+          style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--rad-sm);padding:9px 12px;color:var(--text);font-size:13px;outline:none"
+          onkeydown="if(event.key==='Enter')searchUSDA()">
+        <button class="btn btn-mint" onclick="searchUSDA()">Search</button>
+        <button class="btn btn-ghost" onclick="startBarcodeScanner()" id="barcodeBtn" title="Scan barcode with camera">📷 Barcode</button>
+      </div>
+      <!-- Barcode scanner area -->
+      <div id="barcodeArea" style="display:none;margin-bottom:12px">
+        <div style="font-size:11px;color:var(--text2);margin-bottom:6px">Point camera at barcode. Click Stop when done.</div>
+        <video id="barcodeVideo" style="width:100%;max-height:220px;border-radius:8px;background:#000"></video>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="btn btn-ghost btn-sm" onclick="stopBarcodeScanner()">⏹ Stop Scanner</button>
+          <span id="barcodeStatus" style="font-size:11px;color:var(--text2);align-self:center"></span>
+        </div>
+      </div>
+      <!-- Results -->
+      <div id="usdaResults"></div>
     </div>
   </div>
 
@@ -1782,8 +1813,8 @@ function renderFoodLog(){
   // Recompute based on viewDate
   const loggedFood=activeLog('foodLog');
   const loggedEx=activeLog('exerciseLog');
-  const macros_v={cals:0,fat:0,carbs:0,protein:0,sodium:0,potassium:0,fiber:0,sugar:0};
-  loggedFood.forEach(e=>{ const m=e.mult||1; macros_v.cals+=e.calories*m; macros_v.fat+=e.fat*m; macros_v.carbs+=e.carbs*m; macros_v.protein+=e.protein*m; macros_v.sodium+=(e.sodium||0)*m; macros_v.potassium+=(e.potassium||0)*m; macros_v.fiber+=(e.fiber||0)*m; macros_v.sugar+=(e.sugar||0)*m; });
+  const macros_v={cals:0,fat:0,carbs:0,protein:0,sodium:0,potassium:0,fiber:0,sugar:0,cholesterol:0};
+  loggedFood.forEach(e=>{ const m=e.mult||1; macros_v.cals+=e.calories*m; macros_v.fat+=e.fat*m; macros_v.carbs+=e.carbs*m; macros_v.protein+=e.protein*m; macros_v.sodium+=(e.sodium||0)*m; macros_v.potassium+=(e.potassium||0)*m; macros_v.fiber+=(e.fiber||0)*m; macros_v.sugar+=(e.sugar||0)*m; macros_v.cholesterol+=(e.cholesterol||0)*m; });
   const burn_v=loggedEx.reduce((s,e)=>s+(e.calsBurned||0),0);
   const goals=calcGoals(state.profile),macros={...macros_v},burn=burn_v;
   // Date nav
@@ -1812,7 +1843,7 @@ function renderFoodLog(){
         <div class="fe-qty">${fmt(e.qty)} ${e.unit} · ${fmt(e.fat*(e.mult||1))}g fat · ${fmt(e.carbs*(e.mult||1))}g carbs · ${fmt(e.protein*(e.mult||1))}g prot</div>
       </div>
       <div class="fe-cals">${Math.round(e.calories*(e.mult||1))}</div>
-      ${isToday()?`<button class="btn btn-danger btn-xs" onclick="removeFoodEntry(${state.foodLog.indexOf(e)})">✕</button>`:""}
+      ${isToday()?`<button class="btn btn-ghost btn-xs" onclick="editFoodEntry(${state.foodLog.indexOf(e)})" style="margin-right:2px">✏️</button><button class="btn btn-danger btn-xs" onclick="removeFoodEntry(${state.foodLog.indexOf(e)})">✕</button>`:""}
     </div>`).join("");
 }
 
@@ -1845,15 +1876,71 @@ function renderWater(){
   const target=state.profile.waterTarget,pctVal=Math.min(100,wOz/target*100);
   const wNavEl=document.getElementById('water-date-nav');
   if(wNavEl) wNavEl.innerHTML=dateNavHTML('water');
+
+  // ── Pacing calculation ────────────────────────────────────────
+  // Linear spread from wake time (eatStart) to 10pm over the day
+  const now=new Date();
+  const today=now.toDateString();
+  const eatStart=state.profile.eatStart||'07:00';
+  const wakeTime=new Date(today+' '+eatStart);
+  const bedTime=new Date(today+' 22:00');
+  const totalWakeMins=(bedTime-wakeTime)/60000;
+  const elapsedMins=Math.min(Math.max((now-wakeTime)/60000,0),totalWakeMins);
+  const dayPct=isToday()?Math.min(elapsedMins/totalWakeMins,1):1;
+  const expected=parseFloat((target*dayPct).toFixed(1));
+  const expectedPct=Math.min(100,dayPct*100);
+  const onTrack=wOz>=expected;
+  const deficit=Math.max(0,expected-wOz).toFixed(1);
+  const surplus=Math.max(0,wOz-expected).toFixed(1);
+
+  // Format wakeTime for display
+  const wakeStr=wakeTime.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  const bedStr='10:00 PM';
+
   document.getElementById("waterProgressCard").innerHTML=`
     <div style="text-align:center;margin-bottom:12px">
       <div style="font-size:40px;font-weight:800;font-family:var(--font-head);color:var(--sky)">${fmt(wOz)}</div>
       <div style="font-size:12px;color:var(--text2)">of ${target} fl oz target</div>
     </div>
-    <div class="progress-track" style="height:9px;margin-bottom:5px"><div class="progress-fill sky" style="width:${pctVal}%"></div></div>
-    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2)">
-      <span>${pctVal.toFixed(0)}% complete</span><span>${fmt(Math.max(0,target-wOz))} oz remaining</span>
-    </div>`;
+    <!-- Main consumption bar with pacing marker -->
+    <div style="position:relative;margin-top:20px;margin-bottom:4px">
+      <div class="progress-track" style="height:12px;border-radius:6px">
+        <div class="progress-fill sky" style="width:${pctVal}%;border-radius:6px;transition:width .4s"></div>
+      </div>
+      ${isToday()?`
+      <!-- Pacing marker on top of bar with floating label above -->
+      <div style="position:absolute;top:0;left:${expectedPct}%;transform:translateX(-50%);height:12px;width:3px;background:${onTrack?'var(--mint)':'var(--amber)'};border-radius:1px;box-shadow:0 0 5px ${onTrack?'var(--mint)':'var(--amber)'};z-index:2"></div>
+      <div style="position:absolute;bottom:18px;left:${expectedPct}%;transform:translateX(-50%);white-space:nowrap;font-size:10px;font-weight:700;color:${onTrack?'var(--mint)':'var(--amber)'}">${expected} oz</div>
+      `:''}\n    </div>
+    <!-- Labels below bar -->
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2);margin-bottom:${isToday()?'10':'4'}px">
+      <span>${pctVal.toFixed(0)}% of goal</span>
+      <span>${fmt(Math.max(0,target-wOz))} oz remaining</span>
+    </div>
+    ${isToday()?`
+    <!-- Pacing status row -->
+    <div style="background:${onTrack?'var(--mint-dim)':'rgba(251,176,66,.12)'};border:1px solid ${onTrack?'var(--mint)33':'var(--amber)33'};border-radius:8px;padding:9px 12px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:18px">${onTrack?'💧':'⚠️'}</span>
+      <div style="flex:1">
+        <div style="font-size:12px;font-weight:600;color:${onTrack?'var(--mint)':'var(--amber)'}">
+          ${onTrack?'On track':'Behind pace'}
+          <span style="font-weight:400;color:var(--text2);font-size:11px"> · pace based on ${wakeStr}–${bedStr}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px">
+          Expected by now: <strong style="color:var(--text)">${expected} oz</strong>
+          &nbsp;·&nbsp;
+          ${onTrack
+            ?'<span style="color:var(--mint)">+'+surplus+' oz ahead</span>'
+            :'<span style="color:var(--amber)">'+deficit+' oz behind</span>'}
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:10px;color:var(--text2)">${(dayPct*100).toFixed(0)}% of day</div>
+        <div style="font-size:10px;color:var(--text2)">elapsed</div>
+      </div>
+    </div>
+    `:''}`;
+
   const wEl=document.getElementById("waterLogList");
   if(!loggedWater.length){ wEl.innerHTML='<div class="empty-state"><div class="icon">💧</div><p>No water logged.</p></div>'; return; }
   wEl.innerHTML=`<table class="data-table"><thead><tr><th>Time</th><th>Amount</th><th>fl oz</th><th></th></tr></thead><tbody>`+
@@ -2150,8 +2237,10 @@ function renderRecipeList(){
         ${c._recipeIngredients?`<div class="ci-meta" style="margin-top:2px">${c._recipeIngredients.map(r=>`${r.name} (${fmt(r.qty)} ${r.unit})`).join(", ")}</div>`:""}
       </div>
       <div class="ci-actions">
-        <button class="btn btn-danger btn-xs" onclick="deleteCustomIngredient(${globalIdx})">Del</button>
-        <button class="btn btn-lav btn-xs" onclick="quickAddFromLib('${c.Name.replace(/'/g,"\\'")}')">＋ Log</button>
+        <button class="btn btn-ghost btn-xs" style="font-size:14px" onclick="openFoodDetailFromLib(this.dataset.n)" data-n="${c.Name.replace(/"/g,'&quot;')}">&#x1F441;</button>
+        <button class="btn btn-ghost btn-xs" onclick="editCustomIngredient(${globalIdx})">&#9998;</button>
+        <button class="btn btn-danger btn-xs" onclick="deleteCustomIngredient(${globalIdx})">&#128465;</button>
+        <button class="btn btn-lav btn-xs" onclick="quickAddFromLib('${c.Name.replace(/'/g, "\\'")}')">+ Log</button>
       </div>
     </div>`;
   }).join("");
@@ -2159,6 +2248,12 @@ function renderRecipeList(){
 
 // ── CONVERTER ────────────────────────────────────────────────
 let convSelectedFood=null;
+function renderUSDATab(){
+  // Panel is already rendered in HTML; just focus the search
+  const inp=document.getElementById('usdaSearch');
+  if(inp) setTimeout(()=>inp.focus(),100);
+}
+
 function renderConverter(){}  // just shows the static form; logic is in runConverter
 function runConverter(){
   if(!convSelectedFood) return;
@@ -3159,6 +3254,15 @@ function renderFavLib(){
 }
 
 // ── LIBRARY SORT/FILTER ───────────────────────────────────────
+function openFoodDetailFromLib(name){
+  const all=getAllIngredients();
+  const ing=all.find(i=>i.Name===name);
+  if(!ing) return;
+  const custom=getCustomIngredients();
+  const customIdx=custom.findIndex(i=>i.Name===name);
+  showFoodDetail(ing, customIdx, customIdx>=0, false);
+}
+
 function renderLibAll(){
   const all=getAllIngredients();
   const favs=getFavorites();
@@ -3201,6 +3305,7 @@ function renderLibAll(){
       <td>${(i['Total Carbohydrates (g)']||0).toFixed(1)}</td><td>${(i['Protein (g)']||0).toFixed(1)}</td>
       <td style="display:flex;gap:4px;align-items:center">
         ${starBtn(i.Name)}
+        <button class="btn btn-ghost btn-xs" style="font-size:14px" onclick="openFoodDetailFromLib(this.dataset.n)" data-n="${i.Name.replace(/"/g,'&quot;')}">&#x1F441;</button>
         <button class="btn btn-ghost btn-xs" onclick="quickAddFromLib('${i.Name.replace(/'/g,"\\'")}')">＋</button>
       </td>
     </tr>`).join('');
@@ -3223,6 +3328,7 @@ function switchLibTab(tab){
   else if(tab==='favorites') renderFavLib();
   else if(tab==='custom') renderCustomLib();
   else if(tab==='recipes') renderRecipeList();
+  else if(tab==='lookup') renderUSDATab();
   else if(tab==='converter') renderConverter();
 }
 
@@ -3555,6 +3661,61 @@ function addFoodEntry(){
   notify("✓ Added to log");
   renderAll();
 }
+function editFoodEntry(idx){
+  const e=state.foodLog[idx];
+  if(!e){ notify('Entry not found','error'); return; }
+  document.getElementById('efIdx').value=idx;
+  document.getElementById('editFoodEntryTitle').textContent='Edit: '+e.name;
+  document.getElementById('efQty').value=e.qty||e.mult||1;
+  document.getElementById('efUnit').textContent=e.unit||'serving';
+  document.getElementById('efTime').value=e.time||'';
+  document.getElementById('efMeal').value=e.mealCat||'';
+  _updateEfPreview(e, e.qty||e.mult||1);
+  document.getElementById('efQty').oninput=function(){ _updateEfPreview(e, parseFloat(this.value)||1); };
+  openModal('editFoodEntryModal');
+}
+
+function _updateEfPreview(e, qty){
+  const servingSize=e.qty||1; // original qty logged
+  const origMult=e.mult||1;
+  // mult per unit of qty
+  const multPerQty = servingSize > 0 ? origMult / servingSize : origMult;
+  const newMult = qty * multPerQty;
+  const cal=Math.round(e.calories*newMult);
+  const fat=(e.fat*newMult).toFixed(1);
+  const carb=(e.carbs*newMult).toFixed(1);
+  const prot=(e.protein*newMult).toFixed(1);
+  const chol=Math.round((e.cholesterol||0)*newMult);
+  const sod=Math.round((e.sodium||0)*newMult);
+  document.getElementById('efNutritionPreview').innerHTML=
+    '<span><strong style="color:var(--mint)">'+cal+'</strong> kcal</span>'+
+    '<span><strong>'+fat+'g</strong> fat</span>'+
+    '<span><strong>'+carb+'g</strong> carbs</span>'+
+    '<span><strong>'+prot+'g</strong> prot</span>'+
+    (chol?'<span><strong>'+chol+'mg</strong> chol</span>':'')+
+    (sod?'<span><strong>'+sod+'mg</strong> sodium</span>':'');
+}
+
+function saveEditFoodEntry(){
+  const idx=parseInt(document.getElementById('efIdx').value);
+  const qty=parseFloat(document.getElementById('efQty').value);
+  const time=document.getElementById('efTime').value;
+  const meal=document.getElementById('efMeal').value;
+  if(!qty||qty<=0){ notify('Quantity must be greater than 0','error'); return; }
+  const e=state.foodLog[idx];
+  if(!e){ notify('Entry not found','error'); return; }
+  // Recalculate mult based on new qty
+  const origQty=e.qty||1;
+  const origMult=e.mult||1;
+  const multPerQty=origQty>0?origMult/origQty:origMult;
+  const newMult=qty*multPerQty;
+  state.foodLog[idx]={...e, qty, mult:newMult, time:time||e.time, mealCat:meal||e.mealCat};
+  saveState();
+  closeModal('editFoodEntryModal');
+  notify('✓ Entry updated');
+  renderAll();
+}
+
 function removeFoodEntry(idx){
   const entry=state.foodLog[idx];
   state.foodLog.splice(idx,1); saveState();
@@ -3613,8 +3774,24 @@ function quickWater(oz){
 }
 
 // ── MODAL ────────────────────────────────────────────────────
-function openModal(id){ document.getElementById(id).classList.add("open"); }
-function closeModal(id){ document.getElementById(id).classList.remove("open"); }
+function openModal(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.style.display='flex';
+  el.classList.add('open');
+}
+function closeModal(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.style.display='none';
+  el.classList.remove('open');
+  // Re-enable any inputs disabled for active-fast editing
+  el.querySelectorAll('input:disabled').forEach(inp=>{
+    inp.disabled=false;
+    const grp=inp.closest('.form-group');
+    if(grp){ grp.style.opacity='1'; grp.title=''; }
+  });
+}
 
 // ── NOTIFICATION ─────────────────────────────────────────────
 let notifTimer=null;
@@ -3778,7 +3955,9 @@ function initApp(){
   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
     startReminders(getReminderSettings());
   }
-  setInterval(()=>{ if(currentSection==="dashboard"){buildTimeline(); renderPacing();} renderHeader(); renderSidebarSummary(); },60000);
+  setInterval(()=>{ if(currentSection==="dashboard"){buildTimeline(); renderPacing(); renderDashFast();} renderHeader(); renderSidebarSummary(); },60000);
+  // Fast ticker on dashboard — update every 30s when dashboard is active
+  setInterval(()=>{ if(currentSection==="dashboard") renderDashFast(); },30000);
   initGapi();
 }
 
@@ -4052,6 +4231,71 @@ function endFast(){
   renderFasting();
 }
 
+function editActiveFast(){
+  const active=getActiveFast();
+  if(!active){ notify('No active fast','error'); return; }
+  function toLocal(iso){
+    const d=new Date(iso);
+    return new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  }
+  document.getElementById('editFastId').value=active.id;
+  document.getElementById('editFastStart').value=toLocal(active.startTime);
+  document.getElementById('editFastEnd').value='';
+  document.getElementById('editFastGoal').value=active.goalHours||16;
+  document.getElementById('editFastNotes').value=active.notes||'';
+  // Dim end time — active fasts have no end time yet
+  const endGrp=document.getElementById('editFastEnd').closest('.form-group');
+  if(endGrp){ endGrp.style.opacity='0.4'; endGrp.title='Set when you end the fast'; }
+  document.getElementById('editFastEnd').disabled=true;
+  document.getElementById('fastEditModal').style.display='flex';
+}
+
+function editFast(id){
+  const fasts=getFasts();
+  const f=fasts.find(x=>x.id===id);
+  if(!f) return;
+  // Convert ISO to local datetime-local value
+  function toLocal(iso){
+    const d=new Date(iso);
+    return new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  }
+  document.getElementById('editFastId').value=id;
+  document.getElementById('editFastStart').value=toLocal(f.startTime);
+  document.getElementById('editFastEnd').value=f.endTime?toLocal(f.endTime):'';
+  document.getElementById('editFastGoal').value=f.goalHours||16;
+  document.getElementById('editFastNotes').value=f.notes||'';
+  document.getElementById('fastEditModal').style.display='flex';
+}
+
+function saveEditFast(){
+  const id=document.getElementById('editFastId').value;
+  const start=document.getElementById('editFastStart').value;
+  const end=document.getElementById('editFastEnd').value;
+  const goal=parseFloat(document.getElementById('editFastGoal').value)||16;
+  const notes=document.getElementById('editFastNotes').value.trim();
+  if(!start){ notify('Start time is required','error'); return; }
+  if(end && new Date(end)<=new Date(start)){ notify('End time must be after start time','error'); return; }
+  const fasts=getFasts();
+  const idx=fasts.findIndex(f=>f.id===id);
+  if(idx<0){ notify('Fast not found','error'); return; }
+  fasts[idx]={
+    ...fasts[idx],
+    startTime:new Date(start).toISOString(),
+    endTime:end?new Date(end).toISOString():fasts[idx].endTime,
+    goalHours:goal,
+    notes
+  };
+  saveFasts(fasts);
+  // Re-enable end time input in case it was disabled for active fast
+  const endInp=document.getElementById('editFastEnd');
+  if(endInp) endInp.disabled=false;
+  const endGrp=endInp?endInp.closest('.form-group'):null;
+  if(endGrp){ endGrp.style.opacity='1'; endGrp.title=''; }
+  closeModal('fastEditModal');
+  notify('✓ Fast updated');
+  renderFasting();
+}
+
 function deleteFast(id){
   if(!confirm('Delete this fast record?')) return;
   saveFasts(getFasts().filter(f=>f.id!==id));
@@ -4178,8 +4422,7 @@ async function _writeDriveFile(token,fileId,data){
 }
 
 function _buildSyncPayload(){
-  // Collect all nutrilog keys from localStorage
-  const payload={version:2,syncedAt:new Date().toISOString(),days:{},profile:null,customIngredients:[],templates:[],weights:{},favorites:[],fasts:[]};
+  const payload={version:3,syncedAt:new Date().toISOString(),days:{},profile:null,customIngredients:[],templates:[],weights:{},favorites:[],fasts:[],theme:null};
   for(let i=0;i<localStorage.length;i++){
     const k=localStorage.key(i);
     if(!k||!k.startsWith('nutrilog')) continue;
@@ -4196,6 +4439,67 @@ function _buildSyncPayload(){
     }catch(e){}
   }
   return payload;
+}
+
+// Generate a stable fingerprint for an entry to detect duplicates across devices
+function _entryKey(e){
+  if(!e) return Math.random().toString();
+  // Food entry: time + name + quantity + mult
+  if(e.name!==undefined) return `food:${e.time||''}:${e.name}:${e.qty||e.quantity||''}:${e.mult||1}`;
+  // Exercise entry: time + activity name
+  if(e.activity!==undefined||e.name!==undefined) return `ex:${e.time||''}:${e.activity||e.name||''}`;
+  // Water entry: time + amount
+  if(e.oz!==undefined||e.amount!==undefined) return `water:${e.time||''}:${e.oz||e.amount||''}`;
+  return JSON.stringify(e);
+}
+
+// Merge two arrays of day entries, deduplicating by fingerprint
+// Keeps ALL unique entries from both sides — nothing deleted
+function _mergeEntries(local, remote){
+  const seen=new Set();
+  const result=[];
+  // Local entries first (preserve local order)
+  for(const e of (local||[])){
+    const key=_entryKey(e);
+    if(!seen.has(key)){ seen.add(key); result.push(e); }
+  }
+  // Then remote entries not already present
+  for(const e of (remote||[])){
+    const key=_entryKey(e);
+    if(!seen.has(key)){ seen.add(key); result.push(e); }
+  }
+  // Sort by time if entries have time fields
+  result.sort((a,b)=>{
+    const ta=a.time||''; const tb=b.time||'';
+    return ta<tb?-1:ta>tb?1:0;
+  });
+  return result;
+}
+
+// Merge two day objects at entry level
+function _mergeDay(localDay, remoteDay){
+  if(!localDay && !remoteDay) return {};
+  if(!localDay) return remoteDay;
+  if(!remoteDay) return localDay;
+  return {
+    foodLog: _mergeEntries(localDay.foodLog, remoteDay.foodLog),
+    exerciseLog: _mergeEntries(localDay.exerciseLog, remoteDay.exerciseLog),
+    waterLog: _mergeEntries(localDay.waterLog, remoteDay.waterLog),
+  };
+}
+
+// Merge fasts arrays by id
+function _mergeFasts(local, remote){
+  const map=new Map();
+  for(const f of (remote||[])) map.set(f.id,f);
+  // Local overwrites remote for same id (local edits win)
+  for(const f of (local||[])) map.set(f.id,f);
+  return Array.from(map.values()).sort((a,b)=>new Date(b.startTime)-new Date(a.startTime));
+}
+
+// Merge weight logs (object keyed by date) — union, local wins on conflict
+function _mergeWeights(local, remote){
+  return Object.assign({},remote||{},local||{});
 }
 
 function _applySyncPayload(payload){
@@ -4217,7 +4521,6 @@ async function driveSync(){
   if(!sessionStorage.getItem('nl_auth')){ notify('Please sign in first','error'); return; }
   _setDriveBtn('⟳','Syncing…',true);
   try{
-    // Load Google Identity Services if not already loaded
     if(typeof google==='undefined'||!google.accounts){
       await new Promise((res,rej)=>{
         const s=document.createElement('script');
@@ -4227,50 +4530,394 @@ async function driveSync(){
       });
     }
     const token=await _getDriveToken();
-    // Find existing file
     const existing=await _findDriveFile(token);
-    const localPayload=_buildSyncPayload();
+    const local=_buildSyncPayload();
+
     if(existing){
-      // Merge: Drive data wins for days that exist there but not locally
-      // Local data wins for days that exist locally but not on Drive
-      // For conflicts (same day modified on both), local wins
-      const drivePayload=await _readDriveFile(token,existing.id);
-      // Merge days: union of both, local takes precedence
-      const mergedDays=Object.assign({},drivePayload.days||{},localPayload.days);
-      // For scalar items, local takes precedence (user just made changes here)
+      const remote=await _readDriveFile(token,existing.id);
+
+      // ── Entry-level merge for each day ──────────────────────────
+      const allDates=new Set([...Object.keys(local.days||{}), ...Object.keys(remote.days||{})]);
+      const mergedDays={};
+      allDates.forEach(date=>{
+        mergedDays[date]=_mergeDay(local.days[date], remote.days[date]);
+      });
+
+      // ── Fasts: union by id, local edits win ─────────────────────
+      const mergedFasts=_mergeFasts(local.fasts, remote.fasts);
+
+      // ── Weights: union by date, local wins ──────────────────────
+      const mergedWeights=_mergeWeights(local.weights, remote.weights);
+
+      // ── Profile/settings: local wins (most recent device) ────────
       const merged={
-        ...drivePayload,
-        ...localPayload,
+        version:3,
+        syncedAt:new Date().toISOString(),
+        profile:local.profile||remote.profile,
+        customIngredients:local.customIngredients&&local.customIngredients.length
+          ? local.customIngredients : remote.customIngredients||[],
+        templates:local.templates&&local.templates.length
+          ? local.templates : remote.templates||[],
+        favorites:local.favorites&&local.favorites.length
+          ? local.favorites : remote.favorites||[],
+        theme:local.theme||remote.theme,
         days:mergedDays,
-        syncedAt:new Date().toISOString()
+        fasts:mergedFasts,
+        weights:mergedWeights,
       };
-      // Apply merged back to localStorage (picks up any Drive-only days)
+
       _applySyncPayload(merged);
-      // Write merged back to Drive
       const result=await _writeDriveFile(token,existing.id,merged);
       _driveFileId=result.id||existing.id;
     } else {
-      // No file on Drive yet — create it
-      const result=await _writeDriveFile(token,null,localPayload);
+      const result=await _writeDriveFile(token,null,local);
       _driveFileId=result.id;
     }
-    _setDriveBtn('✓','Synced',false);
-    notify('☁ Synced with Google Drive');
-    // Reload state from localStorage
+
+    // Reload live state from localStorage
     const today=new Date().toISOString().split('T')[0];
     const saved=getDayData(today);
     state.foodLog=saved.foodLog||[];
     state.exerciseLog=saved.exerciseLog||[];
     state.waterLog=saved.waterLog||[];
     state.profile=JSON.parse(localStorage.getItem('nutrilog_profile')||'{}');
+
+    _setDriveBtn('✓','Synced',false);
+    notify('☁ Synced with Google Drive');
     renderAll();
     setTimeout(()=>_setDriveBtn('☁','Sync',false),3000);
   }catch(err){
     console.error('Drive sync error:',err);
     _setDriveBtn('☁','Sync',false);
     notify('Drive sync failed: '+(err.message||err),'error');
-    _driveToken=null; // reset token so next attempt re-auths
+    _driveToken=null;
   }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// USDA / OPEN FOOD FACTS LOOKUP
+// ══════════════════════════════════════════════════════════════
+let _barcodeStream=null;
+let _barcodeInterval=null;
+
+async function _getFdcKey(){
+  return (state.profile&&state.profile.fdcApiKey)||'DEMO_KEY';
+}
+
+async function searchUSDA(){
+  const q=(document.getElementById('usdaSearch')||{value:''}).value.trim();
+  if(!q){ notify('Enter a food name to search','error'); return; }
+  const el=document.getElementById('usdaResults');
+  el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">Searching USDA database…</div>';
+  try{
+    const key=await _getFdcKey();
+    const resp=await fetch(
+      'https://api.nal.usda.gov/fdc/v1/foods/search?query='+encodeURIComponent(q)+'&pageSize=15&dataType=Branded,SR%20Legacy,Foundation&api_key='+key
+    );
+    if(resp.status===429){
+      el.innerHTML='<div style="color:var(--amber);padding:12px">Rate limit reached (DEMO_KEY: 30 searches/hour). Wait a moment and try again.</div>';
+      return;
+    }
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data=await resp.json();
+    _renderFDCResults(data.foods||[], q);
+  }catch(err){
+    console.error('FDC search error:',err);
+    el.innerHTML='<div style="color:var(--rose);padding:12px">Search failed: '+err.message+'. Check your connection.</div>';
+  }
+}
+
+async function lookupBarcode(code){
+  document.getElementById('barcodeStatus').textContent='Looking up '+code+'...';
+  const el=document.getElementById('usdaResults');
+  el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">Looking up barcode '+code+'...</div>';
+  try{
+    const key=await _getFdcKey();
+    const resp=await fetch('https://api.nal.usda.gov/fdc/v1/foods/search?query='+code+'&dataType=Branded&api_key='+key);
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data=await resp.json();
+    if(data.foods&&data.foods.length>0){
+      _renderFDCResults(data.foods.slice(0,5), code);
+    } else {
+      el.innerHTML='<div style="color:var(--rose);padding:12px">Product not found for barcode '+code+'. Try searching by name.</div>';
+    }
+  }catch(err){
+    el.innerHTML='<div style="color:var(--rose);padding:12px">Lookup failed: '+err.message+'</div>';
+  }
+}
+
+function _fdcToIngredient(food){
+  const n={};
+  (food.foodNutrients||[]).forEach(fn=>{ n[fn.nutrientId]=fn.value||0; });
+  const get=function(){ for(let i=0;i<arguments.length;i++){ if(n[arguments[i]]!=null&&n[arguments[i]]!==0) return parseFloat(n[arguments[i]]); } return 0; };
+  const pct=function(val,rda){ return parseFloat((val/rda).toFixed(4)); };
+  const servG=food.servingSize||100;
+  const servUnit=food.servingSizeUnit||'g';
+  const name=(food.description||'Unknown')+(food.brandOwner?' ('+food.brandOwner+')':'');
+  return {
+    Name:name, 'Serving Size':servG, Units:servUnit,
+    Calories:get(1008), 'Calories from Fat':get(1004)*9,
+    'Total Fat (g)':get(1004), 'Saturated Fat (g)':get(1258), 'Trans Fat (g)':get(1257),
+    'Polyunsaturated (g)':get(1293), 'Monounsaturated Fat (g)':get(1292),
+    'Cholesterol (mg)':get(1253), 'Sodium (mg)':get(1093), 'Potassium (mg)':get(1092),
+    'Total Carbohydrates (g)':get(1005), 'Dietary Fiber (g)':get(1079), 'Sugars (g)':get(2000),
+    'Protein (g)':get(1003),
+    'Vitamin A':pct(get(1106),900), 'Vitamin C':pct(get(1162),90),
+    'Calcium':pct(get(1087),1300), 'Iron':pct(get(1089),18),
+    'Vitamin D':pct(get(1114),20), 'Vitamin E':pct(get(1109),15),
+    'Vitamin K':pct(get(1185),120), 'Thiamin':pct(get(1165),1.2),
+    'Riboflavin':pct(get(1166),1.3), 'Niacin':pct(get(1167),16),
+    'Vitamin B6':pct(get(1175),1.7), 'Folic Acid':pct(get(1177),400),
+    'Vitamin B12':pct(get(1178),2.4), 'Pantothenic Acid':pct(get(1180),5),
+    'Phosphorus':pct(get(1091),1250), 'Magnesium':pct(get(1090),420),
+    'Zinc':pct(get(1095),11), 'Selenium':pct(get(1103),55),
+    'Copper':pct(get(1098),0.9), 'Manganese':pct(get(1101),2.3),
+    _custom:true
+  };
+}
+
+function _renderFDCResults(foods, query){
+  const el=document.getElementById('usdaResults');
+  if(!foods.length){
+    el.innerHTML='<div style="color:var(--text2);padding:12px">No results for "'+query+'". Try a different term.</div>';
+    return;
+  }
+  window._fdcLastResults=foods;
+  el.innerHTML='<div style="font-size:10px;color:var(--text2);margin-bottom:8px">'+foods.length+' results from USDA FoodData Central</div>'+
+  foods.map(function(f,i){
+    const cal=Math.round((f.foodNutrients||[]).find(function(n){return n.nutrientId===1008;})||{value:0}).value||
+              Math.round((f.foodNutrients||[]).find(function(n){return n.nutrientId===1008;})?
+              (f.foodNutrients.find(function(n){return n.nutrientId===1008;})).value:0);
+    const getNV=function(id){ const fn=(f.foodNutrients||[]).find(function(n){return n.nutrientId===id;}); return fn?fn.value||0:0; };
+    const prot=getNV(1003).toFixed(1);
+    const carb=getNV(1005).toFixed(1);
+    const fat=getNV(1004).toFixed(1);
+    const kcal=Math.round(getNV(1008));
+    const brand=f.brandOwner?'<span style="color:var(--text3);font-size:10px"> · '+f.brandOwner+'</span>':'';
+    const serving=f.servingSize?'<span style="color:var(--text2);font-size:10px">Per '+f.servingSize+(f.servingSizeUnit||'g')+'</span>':'<span style="color:var(--text2);font-size:10px">Per 100g</span>';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:180px"><div style="font-size:12px;font-weight:600">'+(f.description||'Unknown')+brand+'</div>'+serving+'</div>'
+      +'<div style="display:flex;gap:10px;font-size:11px;color:var(--text2)">'
+      +'<span><strong style="color:var(--mint)">'+kcal+'</strong> kcal</span>'
+      +'<span><strong>'+prot+'g</strong> prot</span>'
+      +'<span><strong>'+carb+'g</strong> carb</span>'
+      +'<span><strong>'+fat+'g</strong> fat</span></div>'
+      +'<div style="display:flex;gap:6px">'
+      +'<button class="btn btn-ghost btn-xs" onclick="previewFDCProduct('+i+')">&#128065; Preview</button>'
+      +'<button class="btn btn-mint btn-xs" onclick="importFDCProduct('+i+')">+ Import</button>'
+      +'</div></div>';
+  }).join('');
+}
+
+function previewFDCProduct(idx){
+  const f=window._fdcLastResults&&window._fdcLastResults[idx];
+  if(!f) return;
+  showFoodDetail(_fdcToIngredient(f),-1,false,true);
+}
+
+function importFDCProduct(idx){
+  const f=window._fdcLastResults&&window._fdcLastResults[idx];
+  if(!f) return;
+  const ing=_fdcToIngredient(f);
+  const custom=getCustomIngredients();
+  const dupIdx=custom.findIndex(function(e){return e.Name===ing.Name;});
+  if(dupIdx>=0){
+    if(!confirm('An ingredient named "'+ing.Name+'" already exists. Replace it?')) return;
+    custom[dupIdx]=ing;
+  } else { custom.push(ing); }
+  saveCustomIngredients(custom);
+  notify('Imported: '+ing.Name);
+  renderCustomLib();
+}
+
+
+// ── BARCODE SCANNER ───────────────────────────────────────────────────────
+async function startBarcodeScanner(){
+  const area=document.getElementById('barcodeArea');
+  const video=document.getElementById('barcodeVideo');
+  if(!navigator.mediaDevices){ notify('Camera not available','error'); return; }
+  try{
+    _barcodeStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject=_barcodeStream;
+    video.play();
+    area.style.display='block';
+    document.getElementById('barcodeStatus').textContent='Scanning…';
+    // Use BarcodeDetector if available, else fallback message
+    if('BarcodeDetector' in window){
+      const detector=new BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128','code_39']});
+      _barcodeInterval=setInterval(async()=>{
+        try{
+          const codes=await detector.detect(video);
+          if(codes.length>0){
+            const code=codes[0].rawValue;
+            stopBarcodeScanner();
+            document.getElementById('usdaSearch').value=code;
+            lookupBarcode(code);
+          }
+        }catch(e){}
+      },500);
+    } else {
+      document.getElementById('barcodeStatus').textContent='Auto-detect not supported. Enter barcode manually and click Search.';
+    }
+  }catch(err){
+    notify('Camera access denied or unavailable','error');
+  }
+}
+
+function stopBarcodeScanner(){
+  if(_barcodeInterval){ clearInterval(_barcodeInterval); _barcodeInterval=null; }
+  if(_barcodeStream){ _barcodeStream.getTracks().forEach(t=>t.stop()); _barcodeStream=null; }
+  const area=document.getElementById('barcodeArea');
+  if(area) area.style.display='none';
+}
+
+// ══════════════════════════════════════════════════════════════
+// FOOD DETAIL / EDIT MODAL
+// ══════════════════════════════════════════════════════════════
+function showFoodDetail(ing, customIdx, isCustom, fromUSDA){
+  fromUSDA=fromUSDA||false;
+  isCustom=isCustom||false;
+  document.getElementById('fdCustomIdx').value=customIdx>=0?customIdx:'';
+  document.getElementById('fdIsCustom').value=isCustom?'1':'';
+  document.getElementById('foodDetailTitle').textContent=ing.Name;
+
+  const ro=!isCustom&&!fromUSDA;
+  const inputStyle='background:var(--bg3);border:1px solid var(--border2);border-radius:var(--rad-sm);padding:7px 10px;color:var(--text);font-size:13px;outline:none;width:100%;box-sizing:border-box';
+
+  function field(label,val,id,unit,step,small,isText){
+    const w=small?'style="flex:0 0 140px"':'';
+    const dv=(val===null||val===undefined)?0:val;
+    const labelHTML=label+(unit?'<span style="color:var(--text3)"> '+unit+'</span>':'');
+    if(ro) return '<div class="form-group" '+w+'><label style="font-size:10px">'+labelHTML+'</label><div style="padding:6px 2px;font-size:13px;font-weight:600;color:var(--text)">'+dv+'</div></div>';
+    if(isText) return '<div class="form-group" '+w+'><label style="font-size:10px">'+labelHTML+'</label><input type="text" id="fd_'+id+'" value="'+String(dv).replace(/"/g,"&quot;")+'" style="'+inputStyle+'"></div>';
+    return '<div class="form-group" '+w+'><label style="font-size:10px">'+labelHTML+'</label><input type="number" id="fd_'+id+'" value="'+(parseFloat(dv)||0)+'" step="'+(step||0.1)+'" min="0" style="'+inputStyle+'"></div>';
+  }
+
+  const body=
+    '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-bottom:16px">'
+    +field('Serving Size',ing['Serving Size'],'serving','',0.5)
+    +field('Unit',ing.Units||'','unit_text','','','',true)
+    +field('Calories',ing.Calories,'cal','kcal',1)
+    +field('Total Fat',ing['Total Fat (g)'],'fat','g')
+    +field('Saturated Fat',ing['Saturated Fat (g)'],'satfat','g')
+    +field('Trans Fat',ing['Trans Fat (g)'],'transfat','g')
+    +field('Cholesterol',ing['Cholesterol (mg)'],'cholesterol','mg',1)
+    +field('Sodium',ing['Sodium (mg)'],'sodium','mg',1)
+    +field('Potassium',ing['Potassium (mg)'],'potassium','mg',1)
+    +field('Total Carbs',ing['Total Carbohydrates (g)'],'carbs','g')
+    +field('Fiber',ing['Dietary Fiber (g)'],'fiber','g')
+    +field('Sugars',ing['Sugars (g)'],'sugar','g')
+    +field('Protein',ing['Protein (g)'],'protein','g')
+    +'</div>'
+    +'<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:8px">Micronutrients (% Daily Value, 0–1 scale)</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">'
+    +field('Vitamin A',ing['Vitamin A'],'vitA','%DV',0.01,true)
+    +field('Vitamin C',ing['Vitamin C'],'vitC','%DV',0.01,true)
+    +field('Calcium',ing['Calcium'],'calcium','%DV',0.01,true)
+    +field('Iron',ing['Iron'],'iron','%DV',0.01,true)
+    +field('Vitamin D',ing['Vitamin D'],'vitD','%DV',0.01,true)
+    +field('Vitamin E',ing['Vitamin E'],'vitE','%DV',0.01,true)
+    +field('Vitamin K',ing['Vitamin K'],'vitK','%DV',0.01,true)
+    +field('Thiamin',ing['Thiamin'],'thiamin','%DV',0.01,true)
+    +field('Riboflavin',ing['Riboflavin'],'riboflavin','%DV',0.01,true)
+    +field('Niacin',ing['Niacin'],'niacin','%DV',0.01,true)
+    +field('Vitamin B6',ing['Vitamin B6'],'vitB6','%DV',0.01,true)
+    +field('Folic Acid',ing['Folic Acid'],'folate','%DV',0.01,true)
+    +field('Vitamin B12',ing['Vitamin B12'],'vitB12','%DV',0.01,true)
+    +field('Zinc',ing['Zinc'],'zinc','%DV',0.01,true)
+    +field('Magnesium',ing['Magnesium'],'magnesium','%DV',0.01,true)
+    +field('Phosphorus',ing['Phosphorus'],'phosphorus','%DV',0.01,true)
+    +field('Selenium',ing['Selenium'],'selenium','%DV',0.01,true)
+    +field('Copper',ing['Copper'],'copper','%DV',0.01,true)
+    +field('Manganese',ing['Manganese'],'manganese','%DV',0.01,true)
+    +'</div>'
+    +(ro?'<div style="margin-top:12px;font-size:11px;color:var(--text2)">Built-in ingredients are read-only. Use <strong>Save as Custom</strong> to create an editable copy.</div>':'');
+
+  document.getElementById('foodDetailBody').innerHTML=body;
+
+  // Action buttons
+  const actions=document.getElementById('foodDetailActions');
+  if(isCustom){
+    actions.innerHTML=`
+      <button class="btn btn-mint" onclick="saveFoodDetailEdit()" style="flex:1">💾 Save Changes</button>
+      <button class="btn btn-ghost" onclick="quickAddFromLib('${ing.Name.replace(/'/g,"\\'")}');closeModal('foodDetailModal')" style="flex:1">＋ Log This Food</button>
+      <button class="btn btn-danger" onclick="deleteCustomIngredient(${customIdx});closeModal('foodDetailModal')">🗑 Delete</button>`;
+  } else if(fromUSDA){
+    actions.innerHTML=`
+      <button class="btn btn-mint" onclick="saveFoodDetailAsNew()" style="flex:1">＋ Import to My Foods</button>
+      <button class="btn btn-ghost" onclick="closeModal('foodDetailModal')">Cancel</button>`;
+  } else {
+    // Built-in read-only
+    actions.innerHTML=`
+      <button class="btn btn-ghost" onclick="saveBuiltInAsCustom('${ing.Name.replace(/'/g,"\\'")}');closeModal('foodDetailModal')" style="flex:1">📋 Save Copy as Custom</button>
+      <button class="btn btn-mint" onclick="quickAddFromLib('${ing.Name.replace(/'/g,"\\'")}');closeModal('foodDetailModal')" style="flex:1">＋ Log This Food</button>`;
+  }
+
+  // Store current ingredient for save operations
+  window._fdCurrentIng=ing;
+  openModal('foodDetailModal');
+}
+
+function _readFoodDetailFields(ing){
+  const g=id=>{ const el=document.getElementById('fd_'+id); return el?(isNaN(parseFloat(el.value))?el.value:parseFloat(el.value)):0; };
+  return {
+    ...ing,
+    'Serving Size':g('serving'),
+    Units:document.getElementById('fd_unit_text')?document.getElementById('fd_unit_text').value||ing.Units:ing.Units,
+    Calories:g('cal'),
+    'Total Fat (g)':g('fat'),
+    'Saturated Fat (g)':g('satfat'),
+    'Trans Fat (g)':g('transfat'),
+    'Cholesterol (mg)':g('cholesterol'),
+    'Sodium (mg)':g('sodium'),
+    'Potassium (mg)':g('potassium'),
+    'Total Carbohydrates (g)':g('carbs'),
+    'Dietary Fiber (g)':g('fiber'),
+    'Sugars (g)':g('sugar'),
+    'Protein (g)':g('protein'),
+    'Vitamin A':g('vitA'),'Vitamin C':g('vitC'),'Calcium':g('calcium'),'Iron':g('iron'),
+    'Vitamin D':g('vitD'),'Vitamin E':g('vitE'),'Vitamin K':g('vitK'),
+    'Thiamin':g('thiamin'),'Riboflavin':g('riboflavin'),'Niacin':g('niacin'),
+    'Vitamin B6':g('vitB6'),'Folic Acid':g('folate'),'Vitamin B12':g('vitB12'),
+    'Zinc':g('zinc'),'Magnesium':g('magnesium'),'Phosphorus':g('phosphorus'),
+    'Selenium':g('selenium'),'Copper':g('copper'),'Manganese':g('manganese'),
+    _custom:true
+  };
+}
+
+function saveFoodDetailEdit(){
+  const idx=parseInt(document.getElementById('fdCustomIdx').value);
+  const updated=_readFoodDetailFields(window._fdCurrentIng);
+  const custom=getCustomIngredients();
+  if(idx>=0 && idx<custom.length){ custom[idx]=updated; saveCustomIngredients(custom); }
+  closeModal('foodDetailModal');
+  notify('✓ Ingredient updated');
+  renderCustomLib(); renderLibAll();
+}
+
+function saveFoodDetailAsNew(){
+  const ing=_readFoodDetailFields(window._fdCurrentIng);
+  ing._custom=true;
+  const custom=getCustomIngredients();
+  const dupIdx=custom.findIndex(e=>e.Name===ing.Name);
+  if(dupIdx>=0){ custom[dupIdx]=ing; } else { custom.push(ing); }
+  saveCustomIngredients(custom);
+  closeModal('foodDetailModal');
+  notify('✓ "'+ing.Name+'" imported to My Foods');
+  renderCustomLib();
+}
+
+function saveBuiltInAsCustom(name){
+  const all=getAllIngredients();
+  const ing=all.find(i=>i.Name===name);
+  if(!ing) return;
+  const copy={...ing, Name:ing.Name+' (copy)', _custom:true};
+  const custom=getCustomIngredients();
+  custom.push(copy);
+  saveCustomIngredients(custom);
+  notify('✓ Copy saved to Custom Ingredients');
+  renderCustomLib();
 }
 
 
@@ -4391,6 +5038,7 @@ function buildFastLeftColumn(active,elapsed,elapsedH,local){
             <input type="datetime-local" id="fast_end_time">
           </div>
           <button class="btn btn-danger" onclick="endFast()" style="min-height:38px">🏁 End Fast</button>
+          <button class="btn btn-ghost" onclick="editActiveFast()" style="min-height:38px" title="Edit start time, goal or notes">✏️ Edit</button>
         </div>
         ${active.notes?`<div style="margin-top:8px;font-size:11px;color:var(--text2);font-style:italic">"${active.notes}"</div>`:''}
       </div>
@@ -4502,13 +5150,23 @@ function buildFastRightColumn(active,elapsedH,local){
         <div class="stat-chip sky"><div class="val">${met}/${fasts.length}</div><div class="lbl">Goals Met</div></div>
       </div>
       <div class="data-table-wrap"><table class="data-table">
-        <thead><tr><th>Date</th><th>Duration</th><th>Goal</th><th>Result</th><th>Notes</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Duration</th><th>Goal</th><th>Result</th><th>Notes</th><th>Actions</th></tr></thead>
         <tbody>${fasts.map((f,i)=>{
           const dur=durs[i];
           const pct=Math.round(Math.min(dur/f.goalHours,1)*100);
           const badge=dur>=f.goalHours?`<span style="color:var(--mint);font-weight:600;font-size:11px">✅ ${pct}%</span>`:dur>=f.goalHours*0.75?`<span style="color:var(--amber);font-weight:600;font-size:11px">🟡 ${pct}%</span>`:`<span style="color:var(--rose);font-weight:600;font-size:11px">🔴 ${pct}%</span>`;
           const dt=new Date(f.startTime).toLocaleDateString([],{month:'short',day:'numeric'});
-          return `<tr><td>${dt}</td><td style="font-weight:600">${dur.toFixed(1)}h</td><td style="color:var(--text2)">${f.goalHours}h</td><td>${badge}</td><td style="color:var(--text2);font-size:11px;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.notes||'—'}</td><td><button class="btn btn-danger btn-xs" onclick="deleteFast('${f.id}')">✕</button></td></tr>`;
+          return `<tr>
+            <td>${dt}</td>
+            <td style="font-weight:600">${dur.toFixed(1)}h</td>
+            <td style="color:var(--text2)">${f.goalHours}h</td>
+            <td>${badge}</td>
+            <td style="color:var(--text2);font-size:11px;max-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.notes||'—'}</td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-ghost btn-xs" onclick="editFast('${f.id}')" style="margin-right:3px">✏️</button>
+              <button class="btn btn-danger btn-xs" onclick="deleteFast('${f.id}')">✕</button>
+            </td>
+          </tr>`;
         }).join('')}</tbody>
       </table></div>
     </div>`;
@@ -4540,6 +5198,99 @@ function logManualFast(){
 
 
 </script>
+
+
+
+<!-- Food Detail / Edit Modal -->
+<div class="modal-overlay" id="foodDetailModal" style="display:none">
+  <div class="modal-box" style="width:640px;max-width:95vw">
+    <button class="modal-close" onclick="closeModal('foodDetailModal')">✕</button>
+    <div class="modal-title" id="foodDetailTitle">Food Details</div>
+    <input type="hidden" id="fdCustomIdx" value="">
+    <input type="hidden" id="fdIsCustom" value="">
+    <!-- Nutrition facts display / edit -->
+    <div id="foodDetailBody"></div>
+    <div id="foodDetailActions" style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap"></div>
+  </div>
+</div>
+
+
+<!-- Edit Food Entry Modal -->
+<div class="modal-overlay" id="editFoodEntryModal" style="display:none">
+  <div class="modal-box" style="width:440px">
+    <button class="modal-close" onclick="closeModal('editFoodEntryModal')">✕</button>
+    <div class="modal-title" id="editFoodEntryTitle">Edit Food Entry</div>
+    <input type="hidden" id="efIdx">
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <label>Quantity</label>
+        <input type="number" id="efQty" step="0.25" min="0.01" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--rad-sm);padding:9px 12px;color:var(--text);font-size:14px;outline:none;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group">
+        <label>Unit</label>
+        <div id="efUnit" style="padding:9px 2px;font-size:13px;color:var(--text2)"></div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Time</label>
+        <input type="time" id="efTime" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--rad-sm);padding:9px 12px;color:var(--text);font-size:14px;outline:none;width:100%;box-sizing:border-box">
+      </div>
+      <div class="form-group">
+        <label>Meal</label>
+        <select id="efMeal" style="background:var(--bg3);border:1px solid var(--border2);border-radius:var(--rad-sm);padding:9px 12px;color:var(--text);font-size:13px;outline:none;width:100%">
+          <option value="">— none —</option>
+          <option value="breakfast">Breakfast</option>
+          <option value="lunch">Lunch</option>
+          <option value="dinner">Dinner</option>
+          <option value="snack">Snack</option>
+        </select>
+      </div>
+    </div>
+    <div id="efNutritionPreview" style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--rad-sm);padding:10px 12px;font-size:12px;margin-bottom:14px;display:flex;gap:14px;flex-wrap:wrap"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-mint" onclick="saveEditFoodEntry()" style="flex:1">💾 Save</button>
+      <button class="btn btn-ghost" onclick="closeModal('editFoodEntryModal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Fast Edit Modal -->
+<div class="modal-overlay" id="fastEditModal" style="display:none">
+  <div class="modal-box" style="max-width:440px">
+    <div class="modal-header">
+      <span class="modal-title">✏️ Edit Fast</span>
+      <button class="modal-close" onclick="closeModal('fastEditModal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="editFastId">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Start Time</label>
+          <input type="datetime-local" id="editFastStart">
+        </div>
+        <div class="form-group">
+          <label>End Time</label>
+          <input type="datetime-local" id="editFastEnd">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Goal Hours</label>
+          <input type="number" id="editFastGoal" min="1" max="168" step="1">
+        </div>
+        <div class="form-group">
+          <label>Notes</label>
+          <input type="text" id="editFastNotes" placeholder="optional">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-mint" onclick="saveEditFast()" style="flex:1">💾 Save Changes</button>
+        <button class="btn btn-ghost" onclick="closeModal('fastEditModal')" style="flex:1">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Undo toast bar -->
 <div id="undoBar" style="display:none;position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:10px 16px;display:none;align-items:center;gap:12px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.3);min-width:260px;max-width:380px">
